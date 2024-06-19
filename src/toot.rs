@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::env;
 use anyhow::Result;
 use axum::http::{HeaderMap, HeaderValue};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 pub async fn create_toot(review: crate::Review) -> Result<Value> {
     let debug_mode = env::var("OXP_DEBUG")?;
