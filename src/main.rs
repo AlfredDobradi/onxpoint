@@ -1,4 +1,7 @@
 mod toot;
+mod redict;
+
+use std::collections::HashMap;
 
 use anyhow::Result;
 use axum::{
@@ -49,6 +52,7 @@ async fn main() -> Result<()> {
 
     // build our application with a route
     let app = Router::new()
+        .route("/api/authorize", post(authenticate))
         .route("/api/review", post(new_review))
         .with_state(pool);
 
@@ -78,29 +82,20 @@ async fn new_review(
         post_url: "".to_string(),
     };
 
-    let mut conn = match pool.get().await.map_err(internal_error) {
+    let conn = match pool.get().await.map_err(internal_error) {
         Ok(conn) => conn,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.1)));
         }
     };
 
-    let key = format!("reviews/{}", review.id.to_string());
-    match conn.set::<&String, String, String>(&key, json!(review).to_string()).await {
-        Ok(_) => { tracing::debug!("saved key {}", &key) },
+    match redict::save_review(conn, &review).await {
+        Ok(_) => { tracing::debug!("saved review {}", review.id.to_string()) },
         Err(e) => {
             tracing::error!("failed to save key: {}", e.to_string());
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.to_string())));
         }
-    };
-
-    match conn.sadd::<&str, &String, i32>("reviews", &key).await {
-        Ok(_) => { tracing::debug!("added key {} to index", key) },
-        Err(e) => {
-            tracing::error!("failed to save key: {}", e.to_string());
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.to_string())));
-        }
-    };
+    }
 
     match toot::create_toot(review).await {
         Ok(res) => (StatusCode::CREATED, Json(res)),
@@ -118,6 +113,21 @@ struct Review {
     review: String,
     schedule: String,
     post_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateSession {
+    username: String,
+    password: String,
+}
+
+async fn authenticate(
+    State(_pool): State<ConnectionPool>,
+    Json(input): Json<CreateSession>
+) -> impl IntoResponse {
+    tracing::debug!("auth attempt from user {}", input.username);
+
+    (StatusCode::OK, "{\"status\": \"OK\"}")
 }
 
 fn internal_error<E>(err: E) -> (StatusCode, String)
