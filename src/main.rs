@@ -2,7 +2,7 @@ mod toot;
 
 use anyhow::Result;
 use axum::{
-    routing::{get, post},
+    routing::post,
     extract::State,
     http::StatusCode,
     Json,
@@ -49,8 +49,6 @@ async fn main() -> Result<()> {
 
     // build our application with a route
     let app = Router::new()
-        // `GET /` goes to `root`
-        .route("/", get(root))
         .route("/api/review", post(new_review))
         .with_state(pool);
 
@@ -59,11 +57,6 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
-}
-
-// basic handler that responds with a static string
-async fn root() -> &'static str {
-    "Hello, World!"
 }
 
 #[derive(Debug, Deserialize)]
