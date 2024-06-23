@@ -22,3 +22,11 @@ pub async fn get_token() -> Result<String> {
 
     Ok(token)
 }
+
+pub async fn verify_token(token: &String) -> Result<()> {
+    let key = crypt_key().await?;
+
+    PasetoParser::<V4, Local>::default().parse(token.as_str(), &key)?;
+
+    Ok(())
+}

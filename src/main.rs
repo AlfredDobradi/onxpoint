@@ -77,10 +77,10 @@ struct CreateReview {
 
 async fn new_review(
     headers: HeaderMap,
-    State(_pool): State<ConnectionPool>,
+    State(pool): State<ConnectionPool>,
     Json(input): Json<CreateReview>
 ) -> impl IntoResponse {
-    let _review = Review{
+    let review = Review{
         id: Uuid::new_v4(),
         url: input.url,
         review: input.review,
@@ -90,30 +90,44 @@ async fn new_review(
 
     tracing::debug!("headers: {:?}", headers);
 
-    (StatusCode::OK, Json(json!("{}")))
+    let auth_header = match headers.get("Authorization") {
+        Some(auth) => auth,
+        None => {
+            tracing::warn!("no authorization header");
+            return (StatusCode::UNAUTHORIZED, Json(json!("Unauthorized")));
+        }
+    };
 
-    // let conn = match pool.get().await.map_err(internal_error) {
-    //     Ok(conn) => conn,
-    //     Err(e) => {
-    //         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.1)));
-    //     }
-    // };
+    if let Ok(auth_header_str) = auth_header.to_str() {
+        let token = auth_header_str.strip_prefix("Bearer ").unwrap_or(auth_header_str).to_string();
+        if let Err(_) = auth::verify_token(&token).await {
+            tracing::warn!("invalid authorization token");
+            return (StatusCode::UNAUTHORIZED, Json(json!("Unauthorized")));
+        }
+    };
 
-    // match redict::save_review(conn, &review).await {
-    //     Ok(_) => { tracing::debug!("saved review {}", review.id.to_string()) },
-    //     Err(e) => {
-    //         tracing::error!("failed to save review {}: {}", review.id.to_string(), e.to_string());
-    //         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.to_string())));
-    //     }
-    // }
+    let conn = match pool.get().await.map_err(internal_error) {
+        Ok(conn) => conn,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.1)));
+        }
+    };
 
-    // match toot::create_toot(review).await {
-    //     Ok(res) => (StatusCode::CREATED, Json(res)),
-    //     Err(e) => {
-    //         eprintln!("error: {}", e);
-    //         (StatusCode::INTERNAL_SERVER_ERROR, Json(json!("Internal Server Error")))
-    //     }
-    // }
+    match redict::save_review(conn, &review).await {
+        Ok(_) => { tracing::debug!("saved review {}", review.id.to_string()) },
+        Err(e) => {
+            tracing::error!("failed to save review {}: {}", review.id.to_string(), e.to_string());
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.to_string())));
+        }
+    }
+
+    match toot::create_toot(review).await {
+        Ok(res) => (StatusCode::CREATED, Json(res)),
+        Err(e) => {
+            eprintln!("error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!("Internal Server Error")))
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
