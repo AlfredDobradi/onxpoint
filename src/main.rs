@@ -1,15 +1,19 @@
 mod toot;
 mod redict;
+mod auth;
 
 use std::collections::HashMap;
 
 use anyhow::Result;
 use axum::{
-    routing::post,
-    extract::State,
-    http::StatusCode,
+    extract::{Query, State},
+    http::{
+        StatusCode,
+        header::HeaderMap,
+    },
+    routing::{get, post},
     Json,
-    Router,
+    Router
 };
 use axum::response::IntoResponse;
 use serde::{Serialize, Deserialize};
@@ -26,7 +30,7 @@ type ConnectionPool = Pool<RedisConnectionManager>;
 async fn main() -> Result<()> {
     let redis_host = match std::env::var("OXP_REDIS_HOST") {
         Ok(host) => host,
-        Err(e) => { panic!("{}", e); }
+        Err(e) => { panic!("OXP_REDIS_HOST: {}", e); }
     };
 
     // initialize tracing
@@ -52,6 +56,7 @@ async fn main() -> Result<()> {
 
     // build our application with a route
     let app = Router::new()
+        .route("/api/hash", get(get_hash))
         .route("/api/authorize", post(authenticate))
         .route("/api/review", post(new_review))
         .with_state(pool);
@@ -71,10 +76,11 @@ struct CreateReview {
 }
 
 async fn new_review(
-    State(pool): State<ConnectionPool>,
+    headers: HeaderMap,
+    State(_pool): State<ConnectionPool>,
     Json(input): Json<CreateReview>
 ) -> impl IntoResponse {
-    let review = Review{
+    let _review = Review{
         id: Uuid::new_v4(),
         url: input.url,
         review: input.review,
@@ -82,28 +88,32 @@ async fn new_review(
         post_url: "".to_string(),
     };
 
-    let conn = match pool.get().await.map_err(internal_error) {
-        Ok(conn) => conn,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.1)));
-        }
-    };
+    tracing::debug!("headers: {:?}", headers);
 
-    match redict::save_review(conn, &review).await {
-        Ok(_) => { tracing::debug!("saved review {}", review.id.to_string()) },
-        Err(e) => {
-            tracing::error!("failed to save key: {}", e.to_string());
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.to_string())));
-        }
-    }
+    (StatusCode::OK, Json(json!("{}")))
 
-    match toot::create_toot(review).await {
-        Ok(res) => (StatusCode::CREATED, Json(res)),
-        Err(e) => {
-            eprintln!("error: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!("Internal Server Error")))
-        }
-    }
+    // let conn = match pool.get().await.map_err(internal_error) {
+    //     Ok(conn) => conn,
+    //     Err(e) => {
+    //         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.1)));
+    //     }
+    // };
+
+    // match redict::save_review(conn, &review).await {
+    //     Ok(_) => { tracing::debug!("saved review {}", review.id.to_string()) },
+    //     Err(e) => {
+    //         tracing::error!("failed to save review {}: {}", review.id.to_string(), e.to_string());
+    //         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.to_string())));
+    //     }
+    // }
+
+    // match toot::create_toot(review).await {
+    //     Ok(res) => (StatusCode::CREATED, Json(res)),
+    //     Err(e) => {
+    //         eprintln!("error: {}", e);
+    //         (StatusCode::INTERNAL_SERVER_ERROR, Json(json!("Internal Server Error")))
+    //     }
+    // }
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -121,13 +131,61 @@ struct CreateSession {
     password: String,
 }
 
+#[derive(Debug, Serialize)]
+struct SessionResponse {
+    status: String,
+    token: String,
+}
+
 async fn authenticate(
-    State(_pool): State<ConnectionPool>,
+    State(pool): State<ConnectionPool>,
     Json(input): Json<CreateSession>
 ) -> impl IntoResponse {
     tracing::debug!("auth attempt from user {}", input.username);
 
-    (StatusCode::OK, "{\"status\": \"OK\"}")
+    let conn = match pool.get().await.map_err(internal_error) {
+        Ok(conn) => conn,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.1)));
+        }
+    };
+
+    if let Err(err) = redict::try_auth(conn, &input).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, json!(err.to_string()).into());
+    }
+
+    let token = match auth::get_token().await {
+        Ok(token) => token,
+        Err(err) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, json!(err.to_string()).into());
+        }
+    };
+
+    let session = SessionResponse{
+        status: "OK".into(),
+        token
+    };
+
+    (StatusCode::OK, Json(json!(session)))
+}
+
+async fn get_hash(
+    Query(params): Query<HashMap<String, String>>
+) -> &'static str {
+    let plain_text = match params.get("plain") {
+        Some(t) => t,
+        None => return "Empty"
+    };
+    let hash = match auth::hash_str(plain_text).await {
+        Ok(hash) => hash,
+        Err(_) => {
+            return "Not OK";
+        }
+    };
+
+    tracing::debug!("hash: {}", hash);
+
+    "OK"
 }
 
 fn internal_error<E>(err: E) -> (StatusCode, String)
