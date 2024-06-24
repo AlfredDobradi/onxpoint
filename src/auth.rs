@@ -1,3 +1,4 @@
+use axum::http::HeaderMap;
 use rusty_paseto::prelude::*;
 use anyhow::Result;
 
@@ -23,10 +24,34 @@ pub async fn get_token() -> Result<String> {
     Ok(token)
 }
 
-pub async fn verify_token(token: &String) -> Result<()> {
+async fn verify_token(token: &String) -> Result<()> {
     let key = crypt_key().await?;
 
     PasetoParser::<V4, Local>::default().parse(token.as_str(), &key)?;
+
+    Ok(())
+}
+
+pub async fn verify_header(
+    headers: HeaderMap
+) -> Result<()> {
+    tracing::debug!("headers: {:?}", &headers);
+
+    let auth_header = match headers.get("Authorization") {
+        Some(auth) => auth,
+        None => {
+            tracing::warn!("no authorization header");
+            return Err(anyhow::format_err!("missing auth header"))
+        }
+    };
+
+    if let Ok(auth_header_str) = auth_header.to_str() {
+        let token = auth_header_str.strip_prefix("Bearer ").unwrap_or(auth_header_str).to_string();
+        if let Err(_) = verify_token(&token).await {
+            tracing::warn!("invalid authorization token");
+            return Err(anyhow::format_err!("failed to verify token"));
+        }
+    };
 
     Ok(())
 }
