@@ -3,8 +3,9 @@ use std::env;
 use anyhow::Result;
 use axum::http::{HeaderMap, HeaderValue};
 use serde_json::Value;
+use crate::model;
 
-pub async fn create_toot(review: crate::Review) -> Result<Value> {
+pub async fn create_toot(review: model::Review) -> Result<Value> {
     let debug_mode = env::var("OXP_DEBUG").unwrap_or("0".to_string());
     let mastodon_host = env::var("OXP_MASTODON_HOST")?;
     let mut access_token = env::var("OXP_ACCESS_TOKEN")?;
