@@ -6,11 +6,12 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{
-        StatusCode,
         header::HeaderMap,
+        StatusCode
     },
+    response::{Redirect, Response},
     routing::{get, post},
     Json,
     Router
@@ -59,6 +60,8 @@ async fn main() -> Result<()> {
         .route("/api/hash", get(get_hash))
         .route("/api/authorize", post(authenticate))
         .route("/api/review", post(new_review))
+        .route("/api/shorten", post(shorten_url))
+        .route("/s/:short_url", get(redirect_short))
         .with_state(pool);
 
     // run our app with hyper, listening globally on port 3000
@@ -88,23 +91,10 @@ async fn new_review(
         post_url: "".to_string(),
     };
 
-    tracing::debug!("headers: {:?}", headers);
-
-    let auth_header = match headers.get("Authorization") {
-        Some(auth) => auth,
-        None => {
-            tracing::warn!("no authorization header");
-            return (StatusCode::UNAUTHORIZED, Json(json!("Unauthorized")));
-        }
-    };
-
-    if let Ok(auth_header_str) = auth_header.to_str() {
-        let token = auth_header_str.strip_prefix("Bearer ").unwrap_or(auth_header_str).to_string();
-        if let Err(_) = auth::verify_token(&token).await {
-            tracing::warn!("invalid authorization token");
-            return (StatusCode::UNAUTHORIZED, Json(json!("Unauthorized")));
-        }
-    };
+    if let Err(e) = auth::verify_header(headers).await {
+        tracing::warn!("auth error: {}", e);
+        return (StatusCode::UNAUTHORIZED, Json(json!("Unauthorized")));
+    }
 
     let conn = match pool.get().await.map_err(internal_error) {
         Ok(conn) => conn,
@@ -200,6 +190,71 @@ async fn get_hash(
     tracing::debug!("hash: {}", hash);
 
     "OK"
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ShortenRequest {
+    pub url: String,
+    pub short: String,
+}
+
+pub async fn shorten_url(
+    headers: HeaderMap,
+    State(pool): State<ConnectionPool>,
+    Json(request): Json<ShortenRequest>
+) -> impl IntoResponse {
+    if let Err(e) = auth::verify_header(headers).await {
+        tracing::warn!("auth error: {}", e);
+        return (StatusCode::UNAUTHORIZED, Json(json!("Unauthorized")));
+    }
+
+    let conn = match pool.get().await.map_err(internal_error) {
+        Ok(conn) => conn,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.1)));
+        }
+    };
+
+    if let Err(e) = redict::shorten_link(conn, &request).await {
+        tracing::warn!("auth error: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!("Internal Server Error")));
+    }
+
+    let base_url = match std::env::var("OXP_BASE_URL") {
+        Ok(url) => url,
+        Err(e) => {
+            tracing::warn!("OXP_BASE_URL: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!("Internal Server Error")));
+        }
+    };
+
+    let short_url = format!("{}/s/{}", base_url.as_str(), request.short.as_str());
+
+    (StatusCode::OK, Json(json!({"status": "ok", "short_url": short_url})))
+}
+
+pub async fn redirect_short(
+    Path(short): Path<String>,
+    State(pool): State<ConnectionPool>,
+) -> Response {
+    let conn = match pool.get().await.map_err(internal_error) {
+        Ok(conn) => conn,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.1))).into_response();
+        }
+    };
+
+    tracing::debug!(short);
+
+    match redict::get_link(conn, short).await {
+        Ok(long) => {
+            Redirect::permanent(long.as_str()).into_response()
+        },
+        Err(e) => {
+            tracing::warn!("{}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!("Internal Server Error"))).into_response()
+        },
+    }
 }
 
 fn internal_error<E>(err: E) -> (StatusCode, String)
