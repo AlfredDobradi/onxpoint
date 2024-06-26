@@ -5,25 +5,12 @@ mod handler;
 mod model;
 mod error;
 
-use std::collections::HashMap;
-
 use anyhow::Result;
 use axum::{
-    extract::{Path, Query, State},
-    http::{
-        header::HeaderMap,
-        StatusCode
-    },
-    response::{Redirect, Response},
     routing::{get, post},
-    Json,
     Router
 };
-use axum::response::IntoResponse;
 use bb8_redis::RedisConnectionManager;
-use serde::{Serialize, Deserialize};
-use serde_json::json;
-use uuid::Uuid;
 use redis::AsyncCommands;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 

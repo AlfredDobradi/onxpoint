@@ -152,8 +152,6 @@ pub async fn redirect_short(
         }
     };
 
-    tracing::debug!(short);
-
     match redict::get_link(conn, short).await {
         Ok(long) => {
             Redirect::permanent(long.as_str()).into_response()
